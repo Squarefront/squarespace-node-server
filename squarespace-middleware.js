@@ -1,0 +1,595 @@
+/*!
+ *
+ * Squarespace Middleware.
+ *
+ */
+var _ = require( "underscore" ),
+    request = require( "request" ),
+    cookieParser = require( "cookie" ),
+    sqsLogger = require( "./squarespace-logger" ),
+
+    API_AUTH_LOGIN = "/api/auth/Login/",
+    API_GET_SITELAYOUT = "/api/commondata/GetSiteLayout/",
+    API_GET_COLLECTIONS = "/api/commondata/GetCollections/",
+    API_GET_COLLECTION = "/api/commondata/GetCollection/",
+    API_GET_BLOCKFIELDS = "/api/block-fields/",
+    API_GET_WIDGETRENDERING = "/api/widget/GetWidgetRendering/";
+    //api/template/GetTemplateTweakSettings/
+    //api/template/GetTemplate?templateId=
+    //api/page-collection-data?collectionId=
+    //api/templates/:templateId
+
+
+/******************************************************************************
+ * @Public
+*******************************************************************************/
+var Middleware = function () {
+    this.sqsUser = null;
+    this.sqsLoginHeaders = null;
+    this.sqsLoginCrumb = null;
+    this.config = {
+        siteurl: null,
+        sitepassword: null,
+        useremail: null,
+        userpassword: null,
+        sandboxmode: false,
+        fulldata: true
+    };
+};
+
+/**
+ *
+ * @method set
+ * @param {string} key The config key to set
+ * @param {string} val The config val to set
+ * @public
+ *
+ */
+Middleware.prototype.set = function ( key, val ) {
+    // If the user left a trailing slash on the siteurl, remove it.
+    if ( key === "siteurl" && val.charAt( val.length - 1 ) === "/" ) {
+        val = val.replace( /\/$/, "" );
+    }
+
+    this.config[ key ] = val;
+};
+
+
+/**
+ *
+ * @method get
+ * @param {string} key The config key to get value of
+ * @public
+ *
+ */
+Middleware.prototype.get = function ( key ) {
+    return this.config[ key ];
+};
+
+
+/**
+ *
+ * @method getCrumb
+ * @public
+ *
+ */
+Middleware.prototype.getCrumb = function () {
+    return this.sqsLoginCrumb;
+};
+
+
+/**
+ *
+ * @method doLogin
+ * @param {function} callback Fired when login and headers are set
+ * @public
+ *
+ */
+Middleware.prototype.doLogin = function ( callback ) {
+    var self = this,
+        cookie,
+        cookieParsed;
+
+    // Ensure proper config is set
+    if ( !this.sqsUser ) {
+        this.sqsUser = {
+            email: this.get( "useremail" ),
+            password: this.get( "userpassword" )
+        };
+    }
+
+    // POST to login
+    request({
+        method: "POST",
+        url: (this.get( "siteurl" ) + API_AUTH_LOGIN),
+        json: true,
+        headers: this.getHeaders(),
+        form: this.sqsUser
+
+    }, function ( error, response, json ) {
+        error = self.getError( error, json );
+
+        if ( error ) {
+            sqsLogger.log( "error", ("Error posting to Squarespace login with middleware => " + error) );
+
+            // Errors first
+            callback( error, null );
+
+            return;
+        }
+
+        // Request to TokenLogin
+        request({
+            url: json.targetWebsite.loginUrl,
+            json: true,
+            headers: self.getHeaders(),
+            qs: self.sqsUser
+
+        }, function ( error, response ) {
+            error = self.getError( error );
+
+            if ( error ) {
+                sqsLogger.log( "error", ("Error requesting secure login token from Squarespace with middleware => " + error) );
+
+                // Errors first
+                callback( error, null );
+
+                return;
+            }
+
+            // Get the response cookie we need
+            cookie = response.headers[ "set-cookie" ].join( ";" );
+            cookieParsed = cookieParser.parse( cookie );
+
+            // Set request headers we will use
+            headers = self.getHeaders({
+                "Cookie": cookie
+            });
+
+            // Store headers here
+            self.sqsLoginHeaders = headers;
+
+            // Store crumb here
+            self.sqsLoginCrumb = cookieParsed.crumb;
+
+            // Errors first, there are none :-)
+            callback( null, headers );
+        });
+    });
+};
+
+
+/**
+ *
+ * @method getAPICollection
+ * @param {string} collectionId ID of collection to get
+ * @param {function} callback Fired when data is fetched
+ * @public
+ *
+ */
+Middleware.prototype.getAPICollection = function ( collectionId, callback ) {
+    var self = this;
+
+    request({
+        url: (this.get( "siteurl" ) + API_GET_COLLECTION),
+        json: true,
+        headers: this.sqsLoginHeaders,
+        qs: _.extend( {collectionId: collectionId}, this.sqsUser )
+
+    }, function ( error, response, json ) {
+        error = self.getError( error, json );
+
+        if ( error ) {
+            sqsLogger.log( "error", ( `Error requesting collection data from Squarespace with middleware => ${error}`) );
+
+        } else {
+            sqsLogger.log( "info", ( `Fetched collection ${collectionId}, url: ${json.fullUrl}` ) );
+
+            callback( json );
+        }
+    });
+};
+
+
+/**
+ *
+ * @method getAPIData
+ * @param {function} callback Fired when data is fetched
+ * @public
+ *
+ */
+Middleware.prototype.getAPIData = function ( callback ) {
+    var apis = [
+            {
+                key: "siteLayout",
+                url: (this.get( "siteurl" ) + API_GET_SITELAYOUT)
+            },
+            {
+                key: "collections",
+                url: (this.get( "siteurl" ) + API_GET_COLLECTIONS)
+            }
+        ],
+        data = {},
+        errors = [],
+        self = this;
+
+    function getAPI() {
+        var api = apis.shift();
+        var collections = [];
+        var curr = 0;
+
+        request({
+            url: api.url,
+            json: true,
+            headers: self.sqsLoginHeaders,
+            qs: self.sqsUser
+
+        }, function ( error, response, json ) {
+            error = self.getError( error, json );
+
+            if ( error ) {
+                sqsLogger.log( "error", ("Error fetching API data from Squarespace with middleware => " + error) );
+
+                errors.push( error );
+            }
+
+            // Store API data for callback
+            data[ api.key ] = json;
+
+            // All done, pass the API data to callback
+            if ( !apis.length ) {
+                if ( self.get( "fulldata" ) ) {
+                    // Now get the fullData for each collection
+                    for ( var id in data.collections.collections ) {
+                        collections.push( data.collections.collections[ id ] );
+                    }
+
+                    collections.forEach(function ( collection ) {
+                        self.getAPICollection( collection.id, function ( collection ) {
+                            curr++;
+
+                            data.collections.collections[ collection.id ] = collection;
+
+                            if ( curr === collections.length ) {
+                                // Errors first
+                                callback( (errors.length ? errors : null), data );
+                            }
+                        });
+                    });
+
+                } else {
+                    // Errors first
+                    callback( (errors.length ? errors : null), data );
+                }
+
+            } else {
+                getAPI();
+            }
+        });
+    }
+
+    getAPI();
+};
+
+
+/**
+ *
+ * @method getHtml
+ * @param {string} url Request url
+ * @param {object} qrs Querystring mapping
+ * @param {function} callback Fired when done
+ * @public
+ *
+ */
+Middleware.prototype.getHtml = function ( url, qrs, callback ) {
+    var self = this;
+
+    url = [this.get( "siteurl" ), url.replace( /^\/|\/$/g, "" )].join( "/" );
+    qrs = (qrs || {});
+
+    if ( this.get( "sitepassword" ) ) {
+        qrs.password = this.get( "sitepassword" );
+    }
+
+    // Don't allow `json` formatted requests to pass here
+    // But allow others, such as `main-content`
+    // @see: https://github.com/NodeSquarespace/node-squarespace-server/issues/128
+    if ( qrs.format && qrs.format.indexOf( "json" ) !== -1 ) {
+        delete qrs.format;
+    }
+
+    request({
+        url: url,
+        headers: this.getHeaders(),
+        qs: qrs
+
+    }, function ( error, response, html ) {
+        error = self.getError( error );
+
+        if ( error ) {
+            sqsLogger.log( "error", ("Error requesting page html from Squarespace with middleware => " + error) );
+        }
+
+        // Errors first
+        callback( error, {
+            html: html ? html : null,
+            status: response ? response.statusCode : null
+        });
+    });
+};
+
+
+/**
+ *
+ * @method getJson
+ * @param {string} url Request url
+ * @param {object} qrs Querystring mapping
+ * @param {function} callback Fired when done
+ * @public
+ *
+ */
+Middleware.prototype.getJson = function ( url, qrs, callback ) {
+    var self = this;
+
+    url = [this.get( "siteurl" ), url.replace( /^\/|\/$/g, "" )].join( "/" );
+    qrs = (qrs || {});
+
+    if ( this.get( "sitepassword" ) ) {
+        qrs.password = this.get( "sitepassword" );
+    }
+
+    qrs.format = "json";
+
+    request({
+        url: url,
+        json: true,
+        headers: this.getHeaders(),
+        qs: qrs
+
+    }, function ( error, response, json ) {
+        error = self.getError( error, json );
+
+        if ( error ) {
+            sqsLogger.log( "error", ("Error requesting page json from Squarespace with middleware => " + error) );
+        }
+
+        // Errors first
+        callback( error, {
+            json: json ? json : null,
+            status: response ? response.statusCode : null
+        });
+    });
+};
+
+
+/**
+ *
+ * @method getJsonAndHtml
+ * @param {string} url Request url
+ * @param {object} qrs Querystring mapping
+ * @param {function} callback Fired when done
+ * @public
+ *
+ */
+Middleware.prototype.getJsonAndHtml = function ( url, qrs, callback ) {
+    var res = {},
+        errors = [],
+        self = this;
+
+    this.getJson( url, qrs, function ( error, json ) {
+        if ( error ) {
+            errors.push( error );
+        }
+
+        res.json = json;
+
+        self.getHtml( url, qrs, function ( error, html ) {
+            if ( error ) {
+                errors.push( error );
+            }
+
+            res.html = html;
+
+            callback( (errors.length ? errors : null), res );
+        });
+    });
+};
+
+
+/**
+ *
+ * @method getQuery
+ * @param {object} data The hash of data a squarespace:query element supports
+ * @param {object} qrs Querystring mapping hash
+ * @param {function} callback Fired when done
+ * @public
+ *
+ * @data {
+ *      collection
+ *      category
+ *      tag
+ *      featured
+ *      limit
+ * }
+ *
+ */
+Middleware.prototype.getQuery = function ( data, qrs, callback ) {
+    var url = (this.get( "siteurl" ) + "/" + data.collection + "/"),
+        self = this;
+
+    qrs = (qrs || {});
+
+    if ( this.get( "sitepassword" ) ) {
+        qrs.password = this.get( "sitepassword" );
+    }
+
+    qrs.format = "json";
+
+    // Tag?
+    if ( data.tag ) {
+        qrs.tag = data.tag;
+    }
+
+    // Category?
+    if ( data.category ) {
+        qrs.category = data.category;
+    }
+
+    // Request?
+    request({
+        url: url,
+        json: true,
+        headers: this.getHeaders(),
+        qs: qrs
+
+    }, function ( error, response, json ) {
+        error = self.getError( error, json );
+
+        if ( error ) {
+            sqsLogger.log( "error", ("Error requesting Squarespace:query with middleware => " + error) );
+        }
+
+        var items = [];
+
+        // Featured?
+        if ( data.featured && json.items ) {
+            for ( i = 0, len = json.items.length; i < len; i++ ) {
+                if ( json.items[ i ].starred ) {
+                    items.push( json.items[ i ] );
+                }
+            }
+
+            json.items = items;
+        }
+
+        // Limit?
+        if ( data.limit && json.items ) {
+            json.items.splice( 0, (json.items.length - data.limit) );
+        }
+
+        // Errors first
+        callback( error, json );
+    });
+};
+
+
+/**
+ *
+ * @method getBlockJson
+ * @param {string} blockId The block id
+ * @param {function} callback Fired when done
+ * @public
+ *
+ */
+Middleware.prototype.getBlockJson = function ( blockId, callback ) {
+    var self = this;
+
+    request({
+        url: (this.get( "siteurl" ) + API_GET_BLOCKFIELDS + blockId),
+        json: true,
+        headers: this.sqsLoginHeaders,
+        qs: this.sqsUser
+
+    }, function ( error, response, json ) {
+        // Pass Error on empty block JSON
+        if ( !json ) {
+            json = { error: "Empty block JSON" };
+        }
+
+        error = self.getError( error, json );
+
+        // Error can come as result
+        if ( error ) {
+            sqsLogger.log( "error", ("Error requesting block json from Squarespace with middleware => " + error) );
+
+            json = null;
+        }
+
+        // Errors first
+        callback( error, json );
+    });
+};
+
+
+/**
+ *
+ * @method getWidgetHtml
+ * @param {object} blockJSON The block data object
+ * @param {function} callback Fired when done
+ * @public
+ *
+ */
+Middleware.prototype.getWidgetHtml = function ( blockJSON, callback ) {
+    var self = this;
+
+    request({
+        method: "POST",
+        url: (this.get( "siteurl" ) + API_GET_WIDGETRENDERING),
+        headers: this.sqsLoginHeaders,
+        qs: {
+            crumb: this.sqsLoginCrumb
+        },
+        form: {
+            widgetJSON: JSON.stringify( blockJSON )
+            //collectionId: ""
+        }
+
+    }, function ( error, response, string ) {
+        var json = JSON.parse( string.replace( /\\uFFFD/g, "" ) );
+
+        error = self.getError( error, json );
+
+        if ( error ) {
+            sqsLogger.log( "error", ("Error requesting widget html from Squarespace with middleware => " + error) );
+
+            json = null;
+        }
+
+        // Errors first
+        callback( error, json );
+    });
+};
+
+
+/**
+ *
+ * @method getError
+ * @description Normalize error handling based on Squarespace's responses
+ * @private
+ *
+ */
+Middleware.prototype.getError = function ( error, json ) {
+    return (typeof json === "object" && json.error ? json.error : error);
+};
+
+/**
+ *
+ * @method getHeaders
+ * @param {object} headers Merge object with required headers
+ * @returns {object}
+ * @private
+ *
+ */
+Middleware.prototype.getHeaders = function ( headers ) {
+    var ret = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/37.0.2062.94 Safari/537.36"
+    };
+
+    if ( headers ) {
+        ret = _.extend( ret, headers );
+    }
+
+    if ( this.sqsLoginHeaders ) {
+        ret = _.extend( ret, this.sqsLoginHeaders );
+    }
+
+    return ret;
+};
+
+
+/******************************************************************************
+ * @Export
+*******************************************************************************/
+module.exports = {
+    Middleware: Middleware
+};

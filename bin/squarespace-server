@@ -1,0 +1,58 @@
+#!/usr/bin/env node
+
+var fs = require( "fs" ),
+    cwd = process.cwd(),
+    args = [].slice.call( process.argv, 2 ),
+    path = require( "path" ),
+    exec = require( "child_process" ).exec,
+    util = require( "../squarespace-util" ),
+    sqsLogger = require( "../squarespace-logger" ),
+    server = require( "../squarespace-server" ),
+    config = path.join( cwd, "template.conf" ),
+    forever = path.join( __dirname, "../", "node_modules", "forever", "bin", "forever" ),
+    startup = path.join( __dirname, "../squarespace-startup.js" )
+    versionIdx = args.indexOf( "--version" ),
+    foreverIdx = args.indexOf( "--forever" ),
+    forneverIdx = args.indexOf( "--fornever" );
+
+
+// Print package version
+if ( versionIdx !== -1 ) {
+    server.printv();
+
+// Warn and stop or print usage if no template.conf
+} else if ( !fs.existsSync( config )  ) {
+    if ( args.length ) {
+        sqsLogger.log( "error", "Required template.conf not found" );
+
+        process.exit();
+
+    } else {
+        server.print();
+    }
+
+// Start with forever process
+} else if ( foreverIdx !== -1 ) {
+    sqsLogger.log( "server", "Started server with forever" );
+
+    // Splice --forever flag from the argument list
+    args.splice( foreverIdx, 1 );
+
+    exec( (forever + " -a --uid 'node-squarespace-server' start " + startup + " " + args.join( " " ) ), function ( error, stdout, stderr ) {} );
+
+// Stop server started with forever process
+} else if ( forneverIdx !== -1 ) {
+    sqsLogger.log( "server", "Stopping the forever server" );
+
+    // Splice --fornever flag from the argument list
+    args.splice( forneverIdx, 1 );
+
+    exec( (forever + " stop node-squarespace-server"), function ( error, stdout, stderr ) {} );
+
+// Standard node process
+} else {
+    config = ("" + fs.readFileSync( config ));
+    config = JSON.parse( config );
+
+    server.init( config, args );
+}
