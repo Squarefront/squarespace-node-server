@@ -624,19 +624,20 @@ printUsage = function () {
     console.log( "Version " + package.version );
     console.log();
     console.log( "Commands:" );
-    console.log( "sqs buster       Delete local site cache" );
-    console.log( "sqs server       Start the local server" );
+    console.log( "sq buster       Delete local site cache" );
+    console.log( "sq server       Start the local server" );
     console.log();
     console.log( "Options:" );
-    console.log( "sqs --version    Print package version" );
-    console.log( "sqs --forever    Start server using forever" );
-    console.log( "sqs --fornever   Stop server started with forever" );
-    console.log( "sqs --port=XXXX  Use the specified port" );
-    console.log( "sqs --quiet      Silence the logger" );
-    console.log( "sqs --open       Open a new tab for the server when it starts" );
+    console.log( "sq --version    Print package version" );
+    console.log( "sq --forever    Start server using forever" );
+    console.log( "sq --fornever   Stop server started with forever" );
+    console.log( "sq --port=XXXX  Use the specified port" );
+    console.log( "sq --quiet      Silence the logger" );
+    console.log( "sq --auth       Change Squarespace authenticatedAccount state" );
+    console.log( "sq --open       Open a new tab for the server when it starts" );
     console.log();
     console.log( "Examples:" );
-    console.log( "sqs server --port=8000" );
+    console.log( "sq server --port=8000" );
     process.exit();
 },
 

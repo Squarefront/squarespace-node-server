@@ -60,34 +60,34 @@ And you will want to add this to your `.gitignore`:
 
 ```shell
 # View api
-sqs
+sq
 
 # Print package version
-sqs --version
+sq --version
 
 # Run the server
-sqs server
+sq server
 
 # Run the server with forever
-sqs server --forever
+sq server --forever
 
 # Stop server started with forever
-sqs server --fornever
+sq server --fornever
 
 # Run the server on a specific port
-sqs server --port=8000
+sq server --port=8000
 
 # Silence the server logging
-sqs server --quiet
+sq server --quiet
 
 # Open new tab in browser
-sqs server --open
+sq server --open
 
 # Change Squarespace authenticatedAccount state
-sqs server --auth
+sq server --auth
 
 # Bust local cache
-sqs buster
+sq buster
 ```
 
 This runs the [express](http://expressjs.com) server on the relevant port. The default is `localhost:5050`.
